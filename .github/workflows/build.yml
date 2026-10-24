@@ -1,0 +1,84 @@
+name: Build Puppeteer (Minecraft 1.20.1)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'puppeteer-1.20.1-staff-1.0.3-source.zip'
+      - '.github/workflows/build.yml'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f puppeteer-1.20.1-staff-1.0.3-source.zip || {
+            echo '::error::Upload puppeteer-1.20.1-staff-1.0.3-source.zip to the repository root.'
+            find . -maxdepth 2 -type f -print | sort
+            exit 1
+          }
+          unzip -t puppeteer-1.20.1-staff-1.0.3-source.zip
+
+      - name: Extract the exact source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/puppeteer-build-source"
+          mkdir -p "$RUNNER_TEMP/puppeteer-build-source"
+          unzip -oq puppeteer-1.20.1-staff-1.0.3-source.zip -d "$RUNNER_TEMP/puppeteer-build-source"
+          test -f "$RUNNER_TEMP/puppeteer-build-source/build.gradle"
+          test -f "$RUNNER_TEMP/puppeteer-build-source/src/main/java/com/puppeteer/PuppeteerItems.java"
+          grep -q 'puppeteer_staff' "$RUNNER_TEMP/puppeteer-build-source/src/main/java/com/puppeteer/PuppeteerItems.java"
+          grep -q 'puppeteer:puppeteer_staff' "$RUNNER_TEMP/puppeteer-build-source/README.md"
+          echo "BUILD_SOURCE=$RUNNER_TEMP/puppeteer-build-source" >> "$GITHUB_ENV"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Build mod
+        working-directory: ${{ env.BUILD_SOURCE }}
+        run: gradle --no-daemon --no-configuration-cache clean build
+
+      - name: Verify built JAR contains the staff
+        id: verify
+        shell: bash
+        working-directory: ${{ env.BUILD_SOURCE }}
+        run: |
+          set -euo pipefail
+          jar_file="$(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' -print | sort | head -n 1)"
+          test -n "$jar_file" || { echo '::error::No distributable mod JAR found.'; ls -la build/libs; exit 1; }
+          jar tf "$jar_file" | grep -qx 'com/puppeteer/PuppeteerItems.class'
+          jar tf "$jar_file" | grep -qx 'assets/puppeteer/models/item/puppeteer_staff.json'
+          jar tf "$jar_file" | grep -qx 'assets/puppeteer/textures/item/puppeteer_staff.png'
+          jar tf "$jar_file" | grep -qx 'fabric.mod.json'
+          echo "Found staff item assets in $jar_file"
+          jar_path="$(realpath "$jar_file")"
+          echo "jar_path=$jar_path" >> "$GITHUB_OUTPUT"
+          echo "Verified output: $jar_path"
+          ls -lh "$jar_path"
+
+      - name: Upload Puppeteer staff mod JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: puppeteer-minecraft-1.20.1
+          path: ${{ steps.verify.outputs.jar_path }}
+          if-no-files-found: error
+          retention-days: 14
